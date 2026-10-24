@@ -10,7 +10,7 @@
 //! 7. After completion the client may `issue_reputation` for the freelancer.
 #![no_std]
 
-use soroban_sdk:{
+use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Vec,
 };
 
@@ -23,7 +23,7 @@ pub const DISPUTE_WIN_THRESHOLD_BPS: u32 = 5_000;
 const PERSISTENT_TTL_THRESHOLD: u32 = 17_280; // ~1 day
 const PERSISTENT_TTL_EXTEND: u32 = 518_400; // ~30 days
 
-#contracterror]
+#[contracterror]
 #derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum EscrowError {
@@ -131,7 +131,7 @@ fn require_not_paused(env: &Env) -> Result<(), EscrowError> {
     {
         return Err(EscrowError::Paused);
     }
-    Ok(()
+    Ok(())
 }
 
 fn load(env: &Env, id: u64) -> Result<EscrowContract, EscrowError> {
@@ -204,7 +204,7 @@ impl Escrow {
         env.storage().instance().set(&DataKey::NextId, &1u64);
         bump_instance(&env);
         env.events().publish((symbol_short!("init"),), admin);
-        Ok(()
+        Ok(())
     }
 
     pub fn version(_env: Env) -> u32 {
@@ -220,7 +220,7 @@ impl Escrow {
         env.storage().instance().set(&DataKey::Paused, &paused);
         bump_instance(&env);
         env.events().publish((symbol_short!("paused"),), paused);
-        Ok(()
+        Ok(())
     }
 
     pub fn is_paused(env: Env) -> bool {
@@ -262,7 +262,7 @@ impl Escrow {
         }
         let id: u64 = env.storage().instance().get(&DataKey::NextId).unwrap_or(1);
         let next_id = id.checked_add(1).ok_or(EscrowError::ArithmeticOverflow)?;
-        env.storage().instance().set(&DataKey::NextId, &nExt_id);
+        env.storage().instance().set(&DataKey::NextId, &next_id);
         bump_instance(&env);
         let c = EscrowContract {
             id,
@@ -313,7 +313,7 @@ impl Escrow {
         }
         save(&env, &c);
         env.events().publish((symbol_short!("deposit"), id), amount);
-        Ok(()
+        Ok(())
     }
 
     /// Client approves a milestone and the freelancer is paid.
@@ -343,7 +343,10 @@ impl Escrow {
             m.amount,
         );
         m.released = true;
-        c.released_amount = c.released_amount.checked_add(m.amount).ok_or(EscrowError::ArithmeticOverflow)?;
+        c.released_amount = c
+            .released_amount
+            .checked_add(m.amount)
+            .ok_or(EscrowError::ArithmeticOverflow)?;
         c.milestones.set(index, m.clone());
         if c.milestones.iter().all(|x| x.released) {
             c.status = ContractStatus::Completed;
@@ -351,7 +354,7 @@ impl Escrow {
         save(&env, &c);
         env.events()
             .publish((symbol_short!("release"), id), (index, m.amount));
-        Ok(()
+        Ok(())
     }
 
     /// Either party may raise a dispute, freezing releases until the admin resolves it.
@@ -374,7 +377,7 @@ impl Escrow {
             .storage()
             .persistent()
             .get(&outcome_key)
-            .unwrap_or_default();
+            .unwrap_or_default();t();
         caller_outcomes.disputes_opened = caller_outcomes
             .disputes_opened
             .checked_add(1)
