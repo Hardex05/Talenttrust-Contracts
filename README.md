@@ -32,8 +32,9 @@ Machine-readable details are in [deployments/testnet.json](deployments/testnet.j
 | `resolve_dispute(id, freelancer_bps)` | admin | Split the held balance using overflow-safe checked math (records dispute win/loss outcomes based on 5,000 bps threshold) |
 | `cancel_contract(id)` | client | Refund unreleased funds and close (increments `cancellations` if funds held) |
 | `issue_reputation(id, rating)` | client | Rate a completed or resolved job (1-5), once |
+| `void_rating(id, reason)` | admin | Void a fraudulent rating, reverse reputation and emit audit trail |
 | `set_paused(bool)` / `is_paused()` | admin / - | Circuit breaker for all mutations |
-| `get_contract(id)`, `contract_count()`, `get_reputation(addr)`, `get_outcomes(addr)`, `get_admin()`, `version()` | - | Reads |
+| `get_contract(id)`, `get_rating(id)`, `contract_count()`, `get_reputation(addr)`, `get_outcomes(addr)`, `get_admin()`, `version()` | - | Reads |
 
 Status flow: `Created -> Funded -> Completed`, with `Disputed -> Resolved` and `Cancelled` side exits. Resolved jobs allow reputation rating; dispute outcomes and cancellation metrics are tracked in persistent `Outcomes`.
 
@@ -60,6 +61,8 @@ Error codes are append-only: existing codes never change meaning, and new varian
 | 15 | `ReputationNotAllowed` | Reputation is not allowed in the current state |
 | 16 | `ReputationAlreadyIssued` | Reputation has already been issued for this escrow |
 | 17 | `ArithmeticOverflow` | A checked arithmetic operation overflowed (amounts, ids, or counters) |
+| 18 | `RatingNotFound` | No rating record exists for this escrow (e.g. issued before the audit trail upgrade) |
+| 19 | `RatingAlreadyVoided` | Rating has already been voided |
 
 ## Events
 
@@ -75,6 +78,7 @@ Events are emitted with the same payloads for non-overflowing inputs as before t
 | `dispute_resolved` | id, to_freelancer, to_client | Dispute resolved with overflow-safe split |
 | `cancelled` | id, refunded | Escrow cancelled and unreleased funds refunded |
 | `reputation_issued` | id, freelancer, rating | Reputation issued for a completed or resolved job |
+| `rep_void` | id, freelancer, rating, reason | Fraudulent rating voided by admin |
 | `paused` | paused | Circuit breaker toggled |
 
 ## Overflow-safe split
@@ -86,6 +90,12 @@ to_freelancer = (held / D) * bps + ((held % D) * bps) / D
 ```
 
 where `D = BPS_DENOMINATOR = 10_000`. This equals `floor(held * bps / D)` and conserves value exactly (`to_freelancer + to_client == held`) for any `held` up to `i128::MAX`.
+
+### Reputation Governance & Audit Trail
+- Ratings are recorded per escrow as `RatingRecord { freelancer, rating, issued_at, voided }`.
+- Protocol admin can void fraudulent or collusive ratings via `void_rating(id, reason)`, which subtracts the rating and 1 contract from the freelancer's reputation and emits `("rep_void", id) -> (freelancer, rating, reason)`.
+- Voided escrows remain flagged so they cannot be re-rated (`ReputationAlreadyIssued`). Attempting to void twice returns `EscrowError::RatingAlreadyVoided (19)`.
+- Ratings issued before this audit trail upgrade have no `RatingRecord` and return `EscrowError::RatingNotFound (18)`.
 
 ## Build and test
 

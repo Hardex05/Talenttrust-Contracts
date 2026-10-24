@@ -11,7 +11,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
+    Vec,
 };
 
 pub const MAX_MILESTONES: u32 = 20;
@@ -24,7 +25,7 @@ const PERSISTENT_TTL_THRESHOLD: u32 = 17_280; // ~1 day
 const PERSISTENT_TTL_EXTEND: u32 = 518_400; // ~30 days
 
 #[contracterror]
-#derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum EscrowError {
     AlreadyInitialized = 1,
@@ -44,6 +45,8 @@ pub enum EscrowError {
     InvalidRating = 15,
     ReputationAlreadyIssued = 16,
     ArithmeticOverflow = 17,
+    RatingNotFound = 18,
+    RatingAlreadyVoided = 19,
 }
 
 #[contracttype]
@@ -96,6 +99,15 @@ pub struct Outcomes {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RatingRecord {
+    pub freelancer: Address,
+    pub rating: u32,
+    pub issued_at: u64,
+    pub voided: bool,
+}
+
+#[contracttype]
 #[derive(Clone)]
 enum DataKey {
     Admin,
@@ -104,6 +116,7 @@ enum DataKey {
     Contract(u64),
     Reputation(Address),
     Outcomes(Address),
+    Rating(u64),
 }
 
 #[contract]
@@ -164,9 +177,9 @@ fn transfer(env: &Env, token_addr: &Address, from: &Address, to: &Address, amoun
 /// Computes `floor(held * bps / D)` without overflow, where `D = BPS_DENOMINATOR`.
 ///
 /// ### Algebraic proof
-/// Let `(held/D) = q and `(held % D) = r`, so `held = q*D + r` with `0 <= r < D`.
+/// Let `q = held / D` and `r = held % D`, so `held = q*D + r` with `0 <= r < D`.
 /// Then:
-/// ``text
+/// ```text
 ///  held * bps / D
 ///    = (q*D + r) * bps / D
 ///    = (q*D*bps + r*bps) / D
@@ -377,7 +390,7 @@ impl Escrow {
             .storage()
             .persistent()
             .get(&outcome_key)
-            .unwrap_or_default();t();
+            .unwrap_or_default();
         caller_outcomes.disputes_opened = caller_outcomes
             .disputes_opened
             .checked_add(1)
@@ -392,7 +405,7 @@ impl Escrow {
         );
 
         env.events().publish((symbol_short!("dispute"), id), caller);
-        Ok(()
+        Ok(())
     }
 
     /// Admin resolves a dispute, paying `freelancer_bps` (0..=10000) of the escrowed
@@ -430,7 +443,8 @@ impl Escrow {
             &c.client,
             to_client,
         );
-        c.released_amount = c.released_amount
+        c.released_amount = c
+            .released_amount
             .checked_add(to_freelancer)
             .ok_or(EscrowError::ArithmeticOverflow)?;
         c.status = ContractStatus::Resolved;
@@ -445,7 +459,7 @@ impl Escrow {
             (symbol_short!("resolved"), id),
             (to_freelancer, to_client),
         );
-        Ok(()
+        Ok(())
     }
 
     /// Client cancels an uncompleted escrow and recovers unreleased funds.
@@ -485,7 +499,7 @@ impl Escrow {
         );
 
         env.events().publish((symbol_short!("cancel"), id), refund);
-        Ok(()
+        Ok(())
     }
 
     /// Client issues a reputation rating (1..=5) for the freelancer after completion.
@@ -517,11 +531,67 @@ impl Escrow {
             PERSISTENT_TTL_THRESHOLD,
             PERSISTENT_TTL_EXTEND,
         );
+
+        let issued_at = env.ledger().timestamp();
+        let rating_record = RatingRecord {
+            freelancer: c.freelancer.clone(),
+            rating,
+            issued_at,
+            voided: false,
+        };
+        let rating_key = DataKey::Rating(id);
+        env.storage().persistent().set(&rating_key, &rating_record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&rating_key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
+
         c.reputation_issued = true;
         save(&env, &c);
         env.events()
             .publish((symbol_short!("reput"), id), (c.freelancer, rating));
-        Ok(()
+        Ok(())
+    }
+
+    /// Governance can void fraudulent ratings, reversing their effect and recording an audit trail.
+    pub fn void_rating(env: Env, id: u64, reason: Symbol) -> Result<(), EscrowError> {
+        require_admin(&env)?;
+        require_not_paused(&env)?;
+
+        let rating_key = DataKey::Rating(id);
+        let mut record: RatingRecord = env
+            .storage()
+            .persistent()
+            .get(&rating_key)
+            .ok_or(EscrowError::RatingNotFound)?;
+
+        if record.voided {
+            return Err(EscrowError::RatingAlreadyVoided);
+        }
+
+        let rep_key = DataKey::Reputation(record.freelancer.clone());
+        let mut rep: Reputation = env.storage().persistent().get(&rep_key).unwrap_or_default();
+        rep.total_rating = rep.total_rating.saturating_sub(record.rating);
+        rep.completed_contracts = rep.completed_contracts.saturating_sub(1);
+        env.storage().persistent().set(&rep_key, &rep);
+        env.storage()
+            .persistent()
+            .extend_ttl(&rep_key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
+
+        record.voided = true;
+        env.storage().persistent().set(&rating_key, &record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&rating_key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
+
+        env.events().publish(
+            (symbol_short!("rep_void"), id),
+            (record.freelancer, record.rating, reason),
+        );
+        Ok(())
+    }
+
+    pub fn get_rating(env: Env, id: u64) -> Option<RatingRecord> {
+        env.storage().persistent().get(&DataKey::Rating(id))
     }
 
     pub fn get_contract(env: Env, id: u64) -> Result<EscrowContract, EscrowError> {
@@ -576,5 +646,5 @@ fn record_dispute_outcome(env: &Env, party: &Address, won: bool) -> Result<(), E
         PERSISTENT_TTL_THRESHOLD,
         PERSISTENT_TTL_EXTEND,
     );
-    Ok(()
+    Ok(())
 }
