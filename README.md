@@ -61,6 +61,8 @@ Machine-readable details are in [deployments/testnet.json](deployments/testnet.j
 | `compact_escrow(id)` | anyone | Replace a terminal escrow with a compact `EscrowReceipt` (emits `("compact", id)`). `Cancelled` any time; `Completed`/`Resolved` only after the rating or `THIRTY_DAYS_IN_LEDGERS` after closing, otherwise `NotCompactable` (`25`) |
 | `schedule_upgrade(wasm_hash)` / `cancel_upgrade()` / `execute_upgrade()` | admin | Time-locked WASM upgrade: scheduling stores `PendingUpgrade { wasm_hash, eta = now + UPGRADE_DELAY_SECS (48h) }` (re-scheduling restarts the delay); `execute_upgrade` fails with `UpgradeNotReady` (`40`) before `eta` and `NoPendingUpgrade` (`39`) if nothing is scheduled, then installs the code and bumps `version()`. Events: `("upg_sched",) -> (wasm_hash, eta)`, `("upg_cncl",) -> wasm_hash`, `("upgraded",) -> (wasm_hash, new_version)` |
 | `get_pending_upgrade()`, `version()` | - | Pending upgrade (if any) and on-chain code version (`1` until the first upgrade) |
+| `propose_admin(new_admin)` / `accept_admin()` / `cancel_admin_proposal()` | admin / nominee / admin | Two-step admin rotation (works while paused): propose (`InvalidAdmin` (`45`) for the current admin; overwrites a pending nomination), the nominee accepts, or the admin cancels (`NoPendingAdmin` (`46`) if none). Events: `("adm_prop",) -> (current, new)`, `("adm_acc",) -> (old, new)`, `("adm_cncl",) -> cancelled` |
+| `get_pending_admin()` | - | Pending admin nominee, if any |
 | `set_paused(caller, paused)` / `is_paused()` | admin or Pauser / - | Circuit breaker for all mutations |
 | `grant_role(role, account)` / `revoke_role(role, account)` | admin | Grant or revoke a `Pauser` or `Resolver` role (`RoleUnchanged` (`33`) if no change); emits `("role_set", role) -> (account, true\|false)` |
 | `has_role(role, account)` | - | Role membership; the admin implicitly holds every role |
@@ -190,6 +192,8 @@ Bonus payments reuse the escrow's existing validation errors: a missing escrow `
 | 42 | `MilestoneNotSubmitted` | `claim_milestone` on a milestone that was not submitted |
 | 43 | `ReviewWindowActive` | `claim_milestone` before the review window elapsed |
 | 44 | `TransferAmountMismatch` | any token transfer into/out of the contract that does not move the contract balance by exactly the requested amount (fee-on-transfer, rebasing or no-op tokens are rejected) |
+| 45 | `InvalidAdmin` | `propose_admin` with the current admin |
+| 46 | `NoPendingAdmin` | `accept_admin` / `cancel_admin_proposal` without a nomination |
 
 Constants: `MIN_MILESTONE_AMOUNT = 1_000_000` (0.1 token at 7 decimals), `MIN_REPUTATION_VALUE = 10_000_000` (1 token at 7 decimals; ratings are weighted by the released amount and dust jobs cannot be rated — sybil resistance comes from this value threshold, not counterparty graph analysis, so clients who are also freelancers of the same counterparty are not blocked), `MAX_ESCROW_TOTAL = 10^18` stroops, `MAX_MILESTONES = 20`.
 

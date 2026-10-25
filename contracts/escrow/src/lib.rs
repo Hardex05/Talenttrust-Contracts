@@ -124,6 +124,8 @@ pub enum EscrowError {
     /// The token moved a different amount than requested (fee-on-transfer,
     /// rebasing or misreporting token); see `transfer_checked`.
     TransferAmountMismatch = 44,
+    InvalidAdmin = 45,
+    NoPendingAdmin = 46,
 }
 
 #[contracttype]
@@ -409,6 +411,7 @@ enum DataKey {
     /// Ledger timestamp at which the freelancer submitted a milestone.
     Submitted(u64, u32),
     ReviewWindow(u64),
+    PendingAdmin,
 }
 
 #[contract]
@@ -1249,6 +1252,67 @@ impl Escrow {
 
     pub fn get_admin(env: Env) -> Result<Address, EscrowError> {
         admin(&env)
+    }
+
+    /// Current admin nominates `new_admin` as successor. Does not move control:
+    /// the nominee must call `accept_admin` to complete the rotation.
+    ///
+    /// Rejects nominating the current admin and overwrites any previous pending
+    /// nomination. Intentionally callable while paused (key rotation is a
+    /// recovery action).
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), EscrowError> {
+        let current = require_admin(&env)?;
+        if new_admin == current {
+            return Err(EscrowError::InvalidAdmin);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("adm_prop"),), (current, new_admin.clone()));
+        Ok(())
+    }
+
+    /// The pending nominee accepts control, moving the admin role to it.
+    /// Requires the nominee's own auth; fails if there is no pending nomination.
+    ///
+    /// Intentionally callable while paused (key rotation is a recovery action).
+    pub fn accept_admin(env: Env) -> Result<(), EscrowError> {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(EscrowError::NoPendingAdmin)?;
+        pending.require_auth();
+        let old = admin(&env)?;
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("adm_acc"),), (old, pending));
+        Ok(())
+    }
+
+    /// Current admin cancels a pending nomination. Fails if none is pending.
+    ///
+    /// Intentionally callable while paused (key rotation is a recovery action).
+    pub fn cancel_admin_proposal(env: Env) -> Result<(), EscrowError> {
+        require_admin(&env)?;
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(EscrowError::NoPendingAdmin)?;
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        bump_instance(&env);
+        env.events().publish((symbol_short!("adm_cncl"),), pending);
+        Ok(())
+    }
+
+    /// Pending admin nominee, if any.
+    pub fn get_pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
     /// Circuit breaker. Caller must be the admin or hold the `Pauser` role.
